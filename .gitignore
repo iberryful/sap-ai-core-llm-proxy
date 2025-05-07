@@ -165,3 +165,6 @@ config.json
 key.pem
 cert.pem
 *.json
+.python-version
+service-key.json
+config.json

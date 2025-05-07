@@ -2,3 +2,6 @@ flask
 ai_core_sdk
 openai
 litellm
+gevent
+greenlet
+gunicorn

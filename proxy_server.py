@@ -25,6 +25,7 @@ class TokenInfo:
     token: Optional[str] = None
     expiry: float = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    
 
 @dataclass
 class SubAccountConfig:
@@ -844,38 +845,35 @@ def handle_default_request(payload, model="gpt-4o"):
     return endpoint_url, modified_payload, subaccount_name
 
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
-def proxy_openai_stream2():
-    logging.info("OPTIONS:Received request to /v1/chat/completions")
+def handle_options():
+    logging.info("OPTIONS: Received preflight request to /v1/chat/completions")
     logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request body:\n {json.dumps(request.get_json(), indent=4)}")
-    return jsonify({
-        "choices": [
-            {
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": "Hi.",
-                    "role": "assistant"
-                }
-            }
-        ],
-        "created": 1721357889,
-        "id": "chatcmpl-9mY6rfxwzY7Q9IyzWairiHEYZfD8a",
-        "model": "gpt-4o-2024-05-13",
-        "object": "chat.completion",
-        "system_fingerprint": "fp_abc28019ad",
-        "usage": {
-            "completion_tokens": 2,
-            "prompt_tokens": 26,
-            "total_tokens": 28
-        }
-    }), 200
+    
+    # Set CORS headers for preflight response
+    response = Response()
+    response.headers.add('Access-Control-Allow-Origin', '*')  # Allow all origins, or restrict as needed
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+    response.headers.add('Access-Control-Max-Age', '3600')  # Cache preflight response for 1 hour
+    
+    return response, 200
 
-@app.route('/v1/models', methods=['GET'])
+@app.route('/v1/models', methods=['GET', 'OPTIONS'])
 def list_models():
     """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
     
+    # Handle OPTIONS request for CORS preflight
+    if request.method == 'OPTIONS':
+        logging.info("OPTIONS: Received preflight request to /v1/models")
+        response = Response()
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    # Handle GET request
     # if not verify_request_token(request):
     #     logging.info("Unauthorized request to list models.")
     #     return jsonify({"error": "Unauthorized"}), 401
@@ -892,7 +890,12 @@ def list_models():
             "owned_by": "sap-ai-core"
         })
     
-    return jsonify({"object": "list", "data": models}), 200
+    # Add CORS headers to the response
+    response = jsonify({"object": "list", "data": models})
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+    return response, 200
 
 content_type="Application/json"
 @app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
@@ -902,10 +905,17 @@ def proxy_openai_stream():
     logging.debug(f"Request headers: {request.headers}")
     logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
     
+    # Add CORS headers for all responses
+    def add_cors_headers(response):
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        return response
+    
     # Verify client authentication token
     if not verify_request_token(request):
         logging.info("Unauthorized request received. Token verification failed.")
-        return jsonify({"error": "Unauthorized"}), 401
+        return add_cors_headers(jsonify({"error": "Unauthorized"})), 401
 
     # Extract model from the request payload
     payload = request.json
@@ -952,20 +962,33 @@ def proxy_openai_stream():
             return handle_non_streaming_request(endpoint_url, headers, modified_payload, model, subaccount_name)
         
         # Handle streaming requests
-        return Response(
+        response = Response(
             stream_with_context(generate_streaming_response(
                 endpoint_url, headers, modified_payload, model, subaccount_name
             )),
             content_type='text/event-stream'
         )
+        # Add CORS headers to streaming response
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        return response
     
     except ValueError as err:
         logging.error(f"Value error during request handling: {err}")
-        return jsonify({"error": str(err)}), 400
+        response = jsonify({"error": str(err)})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        return response, 400
     
     except Exception as err:
         logging.error(f"Unexpected error during request handling: {err}", exc_info=True)
-        return jsonify({"error": str(err)}), 500
+        response = jsonify({"error": str(err)})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        return response, 500
 
 
 def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
@@ -1010,7 +1033,12 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
         token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, SubAccount: {subaccount_name}, "
                           f"PromptTokens: {prompt_tokens}, CompletionTokens: {completion_tokens}, TotalTokens: {total_tokens}")
         
-        return jsonify(final_response), 200
+        # Add CORS headers to the response
+        response = jsonify(final_response)
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        return response, 200
     
     except requests.exceptions.HTTPError as err:
         logging.error(f"HTTP error in non-streaming request: {err}")
@@ -1018,14 +1046,30 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
             logging.error(f"Error response: {err.response.text}")
             try:
                 error_data = err.response.json()
-                return jsonify(error_data), err.response.status_code
+                response = jsonify(error_data)
+                response.headers.add('Access-Control-Allow-Origin', '*')
+                response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+                return response, err.response.status_code
             except json.JSONDecodeError:
-                return jsonify({"error": err.response.text}), err.response.status_code
-        return jsonify({"error": str(err)}), 500
+                response = jsonify({"error": err.response.text})
+                response.headers.add('Access-Control-Allow-Origin', '*')
+                response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+                return response, err.response.status_code
+        response = jsonify({"error": str(err)})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        return response, 500
     
     except Exception as err:
         logging.error(f"Error in non-streaming request: {err}", exc_info=True)
-        return jsonify({"error": str(err)}), 500
+        response = jsonify({"error": str(err)})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        return response, 500
 
 
 def generate_streaming_response(url, headers, payload, model, subaccount_name):
@@ -1185,10 +1229,9 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
             yield f"data: {json.dumps(error_payload)}\n\n"
             yield "data: [DONE]\n\n"
 
-if __name__ == '__main__':
-    args = parse_arguments()
-    logging.info(f"Loading configuration from: {args.config}")
-    config = load_config(args.config)
+def init():
+    global proxy_config  # Declare proxy_config as global
+    config = load_config('config.json')
     
     # Check if this is the new format with subAccounts
     if isinstance(config, ProxyConfig):
@@ -1221,8 +1264,8 @@ if __name__ == '__main__':
         # Load service key
         service_key = load_config(service_key_json)
 
-        host = config.get('host', '127.0.0.1')  # Use host from config, default to 127.0.0.1 if not specified
-        port = config.get('port', 3001)  # Use port from config, default to 3001 if not specified
+        host = config.get('host', '0.0.0.0')  # Use host from config, default to 127.0.0.1 if not specified
+        port = config.get('port', 8080)  # Use port from config, default to 3001 if not specified
 
         # Initialize the proxy_config for compatibility with new code
         proxy_config.secret_authentication_tokens = secret_authentication_tokens
@@ -1252,7 +1295,7 @@ if __name__ == '__main__':
         
         # Build model mappings
         proxy_config.build_model_mapping()
+init()
 
-    logging.info(f"Starting proxy server on host {host} and port {port}...")
-    logging.info(f"API Host: http://{host}:{port}/v1")
-    app.run(host=host, port=port, debug=False)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 8080)), debug=True, threaded=True)
